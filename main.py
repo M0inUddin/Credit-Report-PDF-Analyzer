@@ -1,5 +1,6 @@
 import re
 from typing import List, Dict, Any
+from utils.logger import logger
 
 # If PyPDF2 isn't installed, run "pip install PyPDF2"
 try:
@@ -321,30 +322,30 @@ def compute_score_and_grade(
         # score >= 5
         grade = 1
 
-    # Print debug information
-    print("\n=== SCORING DETAILS ===")
-    print(
+    # logger.info debug information
+    logger.info("\n=== SCORING DETAILS ===")
+    logger.info(
         f"Starting score: {-1 if bankruptcy_found else 0} (Bankruptcy found: {bankruptcy_found})"
     )
 
-    print("\nPOSITIVE TRADELINES:")
+    logger.info("\nPOSITIVE TRADELINES:")
     for info in positive_info:
-        print(f"  {info}")
+        logger.info(f"  {info}")
 
-    print("\nNEGATIVE TRADELINES:")
+    logger.info("\nNEGATIVE TRADELINES:")
     if negative_info:
         for info in negative_info:
-            print(f"  {info}")
+            logger.info(f"  {info}")
     else:
-        print("  None found")
+        logger.info("  None found")
 
-    print("\nSKIPPED TRADELINES:")
+    logger.info("\nSKIPPED TRADELINES:")
     for info in skipped_info:
-        print(f"  {info}")
+        logger.info(f"  {info}")
 
-    print(f"\nFinal score: {score}")
-    print(f"Final grade: {grade}")
-    print("=" * 30)
+    logger.info(f"\nFinal score: {score}")
+    logger.info(f"Final grade: {grade}")
+    logger.info("=" * 30)
 
     return score, grade
 
@@ -352,7 +353,7 @@ def compute_score_and_grade(
 def main():
     # Hard-code the PDF path here, rather than passing arguments
     pdf_file_path = (
-        "docs/CHRISTIAN MCCLELLAN_EXP.pdf"  # Example; adjust to your actual file path
+        "docs/ALYCIA WOOLSEY_EXP.pdf"  # Example; adjust to your actual file path
     )
 
     try:
@@ -369,19 +370,19 @@ def main():
         # Compute score and grade
         score, grade = compute_score_and_grade(tradelines, bankruptcy_found)
 
-        # Print out results
-        print("\n=== CREDIT REPORT SCORING ===")
-        print(f"File: {pdf_file_path}")
-        print(f"Score: {score}")
-        print(f"Grade: {grade}")
+        # logger.info out results
+        logger.info("\n=== CREDIT REPORT SCORING ===")
+        logger.info(f"File: {pdf_file_path}")
+        logger.info(f"Score: {score}")
+        logger.info(f"Grade: {grade}")
 
     except FileNotFoundError as fnf_err:
-        print(fnf_err)
+        logger.error(fnf_err)
     except RuntimeError as run_err:
-        print(f"Runtime error occurred: {run_err}")
+        logger.error(f"Runtime error occurred: {run_err}")
     except Exception as e:
         # Catch-all for unexpected errors
-        print(f"An unexpected error occurred: {e}")
+        logger.error(f"An unexpected error occurred: {e}")
 
 
 if __name__ == "__main__":
