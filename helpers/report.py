@@ -1,7 +1,13 @@
 import fitz  # PyMuPDF
 from datetime import datetime
-from helpers.cleaner import clean_text, parse_date, compute_months_diff, extract_credit_limit
+from helpers.cleaner import (
+    clean_text,
+    parse_date,
+    compute_months_diff,
+    extract_credit_limit,
+)
 import re
+
 
 def check_prior_bankruptcy(text):
     """
@@ -29,6 +35,7 @@ def get_negative_tradelines_for_redemption(negative_tradelines):
         pct_older = len(older_than_2yrs) / len(negative_tradelines)
         return pct_older
     return 0.0
+
 
 def print_detailed_report(score, grade, details):
     """
@@ -113,6 +120,7 @@ def print_detailed_report(score, grade, details):
     print(f"Tradelines rejected: {len(details['rejected_tradelines'])}")
     print(f"Tradelines skipped: {len(details['skipped_tradelines'])}")
 
+
 def grade_report(final_score, positive_tradelines):
     """
     Apply the final grade mapping logic:
@@ -140,7 +148,8 @@ def grade_report(final_score, positive_tradelines):
             return 2
     else:
         return 1
-    
+
+
 def score_credit_report(pdf_path):
     """
     Main function to open the PDF, parse data, apply your logic,
@@ -524,6 +533,7 @@ def score_credit_report(pdf_path):
     }
 
     return final_score, final_grade, extras
+
 
 def get_tradelines(text):
     """

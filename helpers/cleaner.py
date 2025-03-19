@@ -1,6 +1,7 @@
 from datetime import datetime
 import re
 
+
 def clean_text(text):
     """Clean unwanted characters like non-breaking spaces and excessive spaces."""
     return text.replace("\xa0", " ").strip()
@@ -12,7 +13,7 @@ def parse_date(date_str):
         return datetime.strptime(date_str.strip(), "%m/%d/%Y").date()
     except:
         return None
-    
+
 
 def compute_months_diff(d1, d2):
     """
