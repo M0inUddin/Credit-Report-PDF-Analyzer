@@ -1,0 +1,19 @@
+
+Credit Report Analysis
+=====================
+PDF File: example.pdf
+Analysis Date: 2025-03-18 21:05:27
+
+Results:
+- Raw Score: 0
+- Final Grade: 4
+- Positive Tradelines: 0
+- Negative Tradelines: 0
+- Bankruptcy: No
+
+Grade Interpretation:
+1 = Excellent
+2 = Good
+3 = Fair
+4 = Poor
+5 = Very Poor
