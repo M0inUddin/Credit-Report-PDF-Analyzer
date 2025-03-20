@@ -10,5 +10,7 @@ pdf_files_path = [
     if file.endswith(".pdf")
 ]
 for pdf_file_path in pdf_files_path:
+    print(f"Processing {pdf_file_path}")
+    # Score and grade the credit report
     score, grade, details = score_credit_report(pdf_file_path)
     print_detailed_report(score, grade, details)
