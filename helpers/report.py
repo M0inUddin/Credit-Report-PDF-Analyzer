@@ -228,15 +228,26 @@ def score_credit_report(pdf_path):
 
         # We'll define a helper to see if the account is open + current
         is_open_and_current = False
-        if t.get("account_condition", "").lower().startswith("open") and t.get(
-            "payment_status", ""
-        ).lower().startswith("current"):
-            is_open_and_current = True
-            t["evaluation"]["reasons"].append("Account is open and current")
+        if t is not None:  # Make sure t exists
+            account_condition = t.get("account_condition")
+            payment_status = t.get("payment_status")
+
+            if isinstance(account_condition, str) and isinstance(payment_status, str):
+                if account_condition.lower().startswith(
+                    "open"
+                ) and payment_status.lower().startswith("current"):
+                    is_open_and_current = True
+                    t["evaluation"]["reasons"].append("Account is open and current")
+                else:
+                    t["evaluation"]["reasons"].append(
+                        f"Account is not open and current: {account_condition} / {payment_status}"
+                    )
+            else:
+                t["evaluation"]["reasons"].append(
+                    f"Account condition or payment status missing: {account_condition} / {payment_status}"
+                )
         else:
-            t["evaluation"]["reasons"].append(
-                f"Account is not open and current: {t.get('account_condition', 'N/A')} / {t.get('payment_status', 'N/A')}"
-            )
+            print("Error: Tradeline object is None")
 
         # figure out months on file
         months_on_file = t["months_reviewed"]
@@ -289,6 +300,7 @@ def score_credit_report(pdf_path):
 
         # For the mortgage exception: if is_mortgage, we do NOT require responsibility=Individual
         # but for normal accounts, we want responsibility=Individual
+        responsibility = t.get("responsibility")
         meets_responsibility = False
         if is_mortgage:
             # Mortgage can be joint or individual, as long as open+current
@@ -298,14 +310,13 @@ def score_credit_report(pdf_path):
             )
         else:
             # Non-mortgage must be 'Individual'
-            if t.get("responsibility", "").lower().startswith("individual"):
+            if responsibility and responsibility.lower().startswith("individual"):
                 meets_responsibility = True
                 t["evaluation"]["reasons"].append("Individual responsibility")
             else:
                 t["evaluation"]["reasons"].append(
                     f"Not individual responsibility: {t.get('responsibility', 'N/A')}"
                 )
-
         # Now combine all conditions for +1
         if (
             is_open_and_current
@@ -327,8 +338,17 @@ def score_credit_report(pdf_path):
         # -1 for any tradeline that is "Unpaid balance reported as loss" or "Seriously Past Due"
         # except if it's medical or education type, in which case we skip negative.
         negative_flag = False
-        cond_lower = t.get("account_condition", "").lower()
-        stat_lower = t.get("payment_status", "").lower()
+        cond_lower = t.get("account_condition", "")
+        if cond_lower is not None:
+            cond_lower = cond_lower.lower()
+        else:
+            cond_lower = ""
+
+        stat_lower = t.get("payment_status", "")
+        if stat_lower is not None:
+            stat_lower = stat_lower.lower()
+        else:
+            stat_lower = ""
 
         # check for "Unpaid balance reported as loss" or "Seriously Past Due"
         if ("unpaid balance reported as loss" in cond_lower) or (
