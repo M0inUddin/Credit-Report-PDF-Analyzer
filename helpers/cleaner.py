@@ -53,3 +53,35 @@ def extract_credit_limit(lines):
 
     # If no Credit Limit found, return None
     return None
+
+def extract_original_amount(lines):
+    """
+    Extracts the Original Amount from a list of lines.
+    This function looks for the first dollar amount in the lines after finding "Original Amount".
+    """
+    # Check if "Original" and "Amount" appear in the same line
+    original_amount_index = -1
+
+    # If not found, check for consecutive lines
+    if original_amount_index == -1:
+        for i in range(len(lines) - 1):
+            if "Original" in lines[i] and "Amount" in lines[i + 1]:
+                original_amount_index = i + 1
+                break
+
+    # If we found "Original Amount", search for the first dollar amount after that
+    if original_amount_index != -1:
+        for i in range(original_amount_index + 1, len(lines)):
+            # Clean the line for non-breaking spaces
+            cleaned_line = lines[i].replace("\xa0", " ").strip()
+
+            # Match any dollar amount like "$300", "$500.75", etc.
+            match = re.search(r"\$([\d,]+(?:\.\d{2})?|\d+)", cleaned_line)
+            if match:
+                # Return the first matched amount as the Original Amount
+                return int(
+                    match.group(1).replace(",", "")
+                )  # Remove commas and convert to integer
+
+    # If no Original Amount found, return None
+    return None
