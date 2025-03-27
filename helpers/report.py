@@ -2,6 +2,7 @@ import fitz  # PyMuPDF
 from datetime import datetime
 from helpers.cleaner import (
     clean_text,
+    extract_original_amount,
     parse_date,
     compute_months_diff,
     extract_credit_limit,
@@ -31,10 +32,9 @@ def get_negative_tradelines_for_redemption(negative_tradelines):
         for t in negative_tradelines
         if t["status_date"] and t["status_date"] < two_years_ago
     ]
-    if negative_tradelines:
-        pct_older = len(older_than_2yrs) / len(negative_tradelines)
-        return pct_older
-    return 0.0
+    return (
+        len(older_than_2yrs) / len(negative_tradelines) if negative_tradelines else 0.0
+    )
 
 
 def print_detailed_report(score, grade, details):
@@ -73,8 +73,8 @@ def print_detailed_report(score, grade, details):
             f"   Status: {tradeline.get('account_condition', 'N/A')} / {tradeline.get('payment_status', 'N/A')}"
         )
         print(f"   Credit Limit: ${tradeline.get('credit_limit', 'N/A')}")
+        print(f"   Original Amount: {tradeline.get('original_amount', 'N/A')}")
         print(f"   Responsibility: {tradeline.get('responsibility', 'N/A')}")
-        print(f"   Open Date: {tradeline.get('open_date', 'N/A')}")
         print(f"   Months Reviewed: {tradeline.get('months_reviewed', 'N/A')}")
         print(f"   Is Mortgage: {tradeline.get('is_mortgage', False)}")
 
@@ -88,8 +88,8 @@ def print_detailed_report(score, grade, details):
             f"   Status: {tradeline.get('account_condition', 'N/A')} / {tradeline.get('payment_status', 'N/A')}"
         )
         print(f"   Credit Limit: ${tradeline.get('credit_limit', 'N/A')}")
+        print(f"   Original Amount: {tradeline.get('original_amount', 'N/A')}")
         print(f"   Responsibility: {tradeline.get('responsibility', 'N/A')}")
-        print(f"   Open Date: {tradeline.get('open_date', 'N/A')}")
         print(f"   Months Reviewed: {tradeline.get('months_reviewed', 'N/A')}")
         print(f"   Is Mortgage: {tradeline.get('is_mortgage', False)}")
         print(
@@ -106,8 +106,8 @@ def print_detailed_report(score, grade, details):
             f"   Status: {tradeline.get('account_condition', 'N/A')} / {tradeline.get('payment_status', 'N/A')}"
         )
         print(f"   Credit Limit: ${tradeline.get('credit_limit', 'N/A')}")
+        print(f"   Original Amount: {tradeline.get('original_amount', 'N/A')}")
         print(f"   Responsibility: {tradeline.get('responsibility', 'N/A')}")
-        print(f"   Open Date: {tradeline.get('open_date', 'N/A')}")
         print(f"   Months Reviewed: {tradeline.get('months_reviewed', 'N/A')}")
         print(f"   Is Mortgage: {tradeline.get('is_mortgage', False)}")
         print(
@@ -135,19 +135,154 @@ def grade_report(final_score, positive_tradelines):
         return 5
     elif final_score == 0:
         return 4
-    elif final_score in [1, 2]:
+    elif final_score in (1, 2):
         return 3
-    elif final_score in [3, 4]:
-        # check if final_score == 4 and we have an open mortgage => grade=1
+    elif final_score in (3, 4):
         has_open_mortgage = any(
-            t["is_mortgage"] for t in positive_tradelines if t.get("is_mortgage")
+            t.get("is_mortgage", False) for t in positive_tradelines
         )
-        if final_score == 4 and has_open_mortgage:
-            return 1
-        else:
-            return 2
+        return 1 if (final_score == 4 and has_open_mortgage) else 2
     else:
         return 1
+
+
+def evaluate_tradeline(t, report_date, has_bankruptcy):
+    """
+    Helper function to evaluate a single tradeline for positive/negative scoring.
+    """
+    # Initialize evaluation details
+    t["evaluation"] = {
+        "status": "pending",
+        "is_bankruptcy_related": False,
+        "is_positive": False,
+        "is_negative": False,
+        "is_skipped": False,
+        "reasons": [],
+    }
+
+    # Skip if discharged through bankruptcy
+    if has_bankruptcy and any(
+        cond in t.get("account_condition", "").lower()
+        for cond in ["discharged through bankruptcy", "included in bankruptcy"]
+    ):
+        t["evaluation"].update(
+            {
+                "status": "skipped",
+                "is_skipped": True,
+                "is_bankruptcy_related": True,
+                "reasons": ["Excluded due to bankruptcy discharge"],
+            }
+        )
+        return t
+
+    # Determine mortgage type
+    account_type = t.get("account_type", "") or ""
+    account_type = account_type.lower()
+    is_conventional_fha = (
+        "conventional real estate loan" in account_type
+        or "fha real estate loan" in account_type
+    )
+    is_mortgage = "mortgage" in account_type or "real estate" in account_type
+    t["is_mortgage"] = is_conventional_fha or is_mortgage
+
+    # Check if open and current
+    is_open = (t.get("account_condition") or "").lower().startswith("open")
+    is_current = (t.get("payment_status", "") or "").lower().startswith("current")
+    is_open_current = is_open and is_current
+
+    # Check months on file - removed for mortgages
+    open_date = t.get("open_date")
+    months_on_file = None
+    if not is_conventional_fha:
+        months_on_file = t.get("months_reviewed") or (
+            compute_months_diff(open_date, report_date) if open_date else None
+        )
+
+    # Check credit limit/original amount
+    credit_limit = t.get("credit_limit", 0) or 0
+    original_amount = t.get("original_amount", 0) or 0
+    if is_conventional_fha:
+        limit_ok = original_amount > 30000
+        t["evaluation"]["reasons"].append(
+            f"Conventional/FHA mortgage {'meets' if limit_ok else 'fails'} $30k original amount"
+        )
+    else:
+        limit_ok = credit_limit > 1000 or original_amount > 1000
+
+    # Removed responsibility check for mortgages
+    meets_responsibility = not is_conventional_fha and (
+        t.get("responsibility", "") or ""
+    ).lower().startswith("individual")
+
+    # Exclude certain account types
+    skip_positive = any(
+        [
+            t.get("is_medical_or_edu", False),
+            "auto loan" in account_type,
+            "auto lease" in account_type,
+            "selfreported" in account_type,
+        ]
+    )
+
+    # Determine positive status
+    if is_conventional_fha:
+        # For conventional or FHA loans, only check if open, current, and meets original amount
+        if is_open_current and limit_ok:
+            t["evaluation"].update(
+                {
+                    "status": "accepted",
+                    "is_positive": True,
+                    "reasons": ["ACCEPTED as positive mortgage tradeline"],
+                }
+            )
+        else:
+            t["evaluation"]["reasons"].append("Does not meet mortgage criteria")
+    else:
+        # For other account types, keep existing criteria
+        if (
+            is_open_current
+            and meets_responsibility
+            and limit_ok
+            and months_on_file
+            and months_on_file >= 12
+            and not skip_positive
+        ):
+            t["evaluation"].update(
+                {
+                    "status": "accepted",
+                    "is_positive": True,
+                    "reasons": ["ACCEPTED as positive tradeline"],
+                }
+            )
+        else:
+            t["evaluation"]["reasons"].append("Does not meet positive criteria")
+
+    # Determine negative status
+    cond_status = (t.get("account_condition", "") or "").lower()
+    payment_status = (t.get("payment_status", "") or "").lower()
+    if (
+        "unpaid balance reported as loss" in cond_status
+        or "seriously past due" in payment_status
+    ) and not t.get("is_medical_or_edu"):
+        t["evaluation"].update(
+            {
+                "status": "rejected",
+                "is_negative": True,
+                "reasons": ["Negative status detected"],
+            }
+        )
+
+    # Handle skipped tradelines
+    if not (t["evaluation"]["is_positive"] or t["evaluation"]["is_negative"]):
+        t["evaluation"].update(
+            {
+                "status": "skipped",
+                "is_skipped": True,
+                "reasons": ["Does not meet criteria for positive or negative"],
+            }
+        )
+
+    return t
 
 
 def score_credit_report(pdf_path):
@@ -164,7 +299,7 @@ def score_credit_report(pdf_path):
     # Extract full text
     full_text = ""
     for page in doc:
-        full_text += page.get_text("text")
+        full_text += page.get_text("text")  # type: ignore
     doc.close()
 
     # Check for prior bankruptcy (Exception #2)
@@ -172,387 +307,74 @@ def score_credit_report(pdf_path):
 
     # If there is a bankruptcy, score starts at -1, else 0
     base_score = -1 if has_bankruptcy else 0
+    report_date = datetime.now().date()
 
-    # We parse the tradelines
-    positive_count = 0
-    negative_count = 0
-    positive_tradelines_list = []
-    negative_tradelines_list = []
-    skipped_tradelines_list = []
-    all_tradelines = []
+    # Parse tradelines
+    all_tradelines = [
+        evaluate_tradeline(t, report_date, has_bankruptcy)
+        for t in get_tradelines(full_text)
+    ]
 
-    for t in get_tradelines(full_text):
-        # Store the tradeline for later reference
-        all_tradelines.append(t)
+    # Categorize tradelines
+    pos_tradelines = [t for t in all_tradelines if t["evaluation"]["is_positive"]]
+    neg_tradelines = [t for t in all_tradelines if t["evaluation"]["is_negative"]]
+    skipped_tradelines = [t for t in all_tradelines if t["evaluation"]["is_skipped"]]
 
-        # Initialize evaluation details
-        t["evaluation"] = {
-            "status": "pending",
-            "is_bankruptcy_related": False,
-            "is_positive": False,
-            "is_negative": False,
-            "is_skipped": False,
-            "reasons": [],
-        }
+    # Calculate raw score
+    raw_score = base_score + len(pos_tradelines) - len(neg_tradelines)
 
-        # ----- Possibly skip if "Debt included in or discharged through Bankruptcy" for prior bankruptcy scenario
-        if has_bankruptcy:
-            if (
-                t.get("account_condition", "")
-                .lower()
-                .find("discharged through bankruptcy")
-                >= 0
-                or t.get("account_condition", "").lower().find("included in bankruptcy")
-                >= 0
-            ):
-                # Skip counting entirely
-                t["evaluation"]["status"] = "skipped"
-                t["evaluation"]["is_skipped"] = True
-                t["evaluation"]["is_bankruptcy_related"] = True
-                t["evaluation"]["reasons"].append(
-                    "Excluded due to bankruptcy discharge"
-                )
-                skipped_tradelines_list.append(t)
-                continue
-
-        # ---------- Step 2: +1 conditions -----------
-        # Quick check for mortgage:
-        is_mortgage = False
-        if t["account_type"]:
-            if "real estate" in t["account_type"] or "mortgage" in t["account_type"]:
-                is_mortgage = True
-                t["evaluation"]["reasons"].append("Identified as mortgage")
-
-        # We'll store this on the tradeline for final grading logic
-        t["is_mortgage"] = is_mortgage
-
-        # We'll define a helper to see if the account is open + current
-        is_open_and_current = False
-        if t is not None:  # Make sure t exists
-            account_condition = t.get("account_condition")
-            payment_status = t.get("payment_status")
-
-            if isinstance(account_condition, str) and isinstance(payment_status, str):
-                if account_condition.lower().startswith(
-                    "open"
-                ) and payment_status.lower().startswith("current"):
-                    is_open_and_current = True
-                    t["evaluation"]["reasons"].append("Account is open and current")
-                else:
-                    t["evaluation"]["reasons"].append(
-                        f"Account is not open and current: {account_condition} / {payment_status}"
-                    )
-            else:
-                t["evaluation"]["reasons"].append(
-                    f"Account condition or payment status missing: {account_condition} / {payment_status}"
-                )
-        else:
-            print("Error: Tradeline object is None")
-
-        # figure out months on file
-        months_on_file = t["months_reviewed"]
-        if months_on_file is None and t["open_date"]:
-            # fallback: compare open_date with report_date
-            months_on_file = compute_months_diff(t["open_date"], report_date)
-
-        if months_on_file is not None:
-            t["evaluation"]["reasons"].append(f"Months on file: {months_on_file}")
-            if months_on_file >= 12:
-                t["evaluation"]["reasons"].append("Meets minimum 12 months requirement")
-            else:
-                t["evaluation"]["reasons"].append(
-                    "Does not meet minimum 12 months requirement"
-                )
-        else:
-            t["evaluation"]["reasons"].append("Unable to determine months on file")
-
-        # Check "credit limit > 1000" requirement
-        limit_ok = t["credit_limit"] and (t["credit_limit"] > 1000)
-        if t["credit_limit"]:
-            t["evaluation"]["reasons"].append(f"Credit limit: ${t['credit_limit']}")
-            if limit_ok:
-                t["evaluation"]["reasons"].append(
-                    "Meets minimum $1000 credit limit requirement"
-                )
-            else:
-                t["evaluation"]["reasons"].append(
-                    "Does not meet minimum $1000 credit limit requirement"
-                )
-        else:
-            t["evaluation"]["reasons"].append("No credit limit found")
-
-        # Check if it is auto/lease, student, or medical => skip from positive
-        skip_for_positive = False
-        if t["is_medical_or_edu"]:
-            skip_for_positive = True
-            t["evaluation"]["reasons"].append(
-                "Medical or educational account - not counted as positive"
-            )
-
-        # Also skip if the account_type has "Auto Loan" or "Auto Lease"
-        if t["account_type"] and (
-            "auto loan" in t["account_type"] or "auto lease" in t["account_type"]
-        ):
-            skip_for_positive = True
-            t["evaluation"]["reasons"].append(
-                "Auto loan or lease - not counted as positive"
-            )
-
-        # For the mortgage exception: if is_mortgage, we do NOT require responsibility=Individual
-        # but for normal accounts, we want responsibility=Individual
-        responsibility = t.get("responsibility")
-        meets_responsibility = False
-        if is_mortgage:
-            # Mortgage can be joint or individual, as long as open+current
-            meets_responsibility = True
-            t["evaluation"]["reasons"].append(
-                "Mortgage - responsibility requirement waived"
-            )
-        else:
-            # Non-mortgage must be 'Individual'
-            if responsibility and responsibility.lower().startswith("individual"):
-                meets_responsibility = True
-                t["evaluation"]["reasons"].append("Individual responsibility")
-            else:
-                t["evaluation"]["reasons"].append(
-                    f"Not individual responsibility: {t.get('responsibility', 'N/A')}"
-                )
-        # Now combine all conditions for +1
-        if (
-            is_open_and_current
-            and meets_responsibility
-            and limit_ok
-            and months_on_file is not None
-            and months_on_file >= 12
-            and not skip_for_positive
-        ):
-            positive_count += 1
-            t["evaluation"]["status"] = "accepted"
-            t["evaluation"]["is_positive"] = True
-            t["evaluation"]["reasons"].append("ACCEPTED as positive tradeline")
-            positive_tradelines_list.append(t)
-        else:
-            t["evaluation"]["reasons"].append("NOT accepted as positive tradeline")
-
-        # ---------- Step 3: -1 conditions -----------
-        # -1 for any tradeline that is "Unpaid balance reported as loss" or "Seriously Past Due"
-        # except if it's medical or education type, in which case we skip negative.
-        negative_flag = False
-        cond_lower = t.get("account_condition", "")
-        if cond_lower is not None:
-            cond_lower = cond_lower.lower()
-        else:
-            cond_lower = ""
-
-        stat_lower = t.get("payment_status", "")
-        if stat_lower is not None:
-            stat_lower = stat_lower.lower()
-        else:
-            stat_lower = ""
-
-        # check for "Unpaid balance reported as loss" or "Seriously Past Due"
-        if ("unpaid balance reported as loss" in cond_lower) or (
-            "seriously past due" in stat_lower
-        ):
-            t["evaluation"]["reasons"].append("Negative status detected")
-            # skip if medical or edu
-            if not t["is_medical_or_edu"]:
-                negative_flag = True
-                t["evaluation"]["reasons"].append("Counted as negative tradeline")
-            else:
-                t["evaluation"]["reasons"].append(
-                    "Medical/educational account - negative status ignored"
-                )
-
-        if negative_flag:
-            negative_count += 1
-            t["evaluation"]["status"] = "rejected"
-            t["evaluation"]["is_negative"] = True
-            negative_tradelines_list.append(t)
-
-        # If neither positive nor negative nor skipped due to bankruptcy
-        if (
-            not t["evaluation"]["is_positive"]
-            and not t["evaluation"]["is_negative"]
-            and not t["evaluation"]["is_bankruptcy_related"]
-        ):
-            t["evaluation"]["status"] = "skipped"
-            t["evaluation"]["is_skipped"] = True
-            t["evaluation"]["reasons"].append(
-                "Does not meet criteria for positive or negative"
-            )
-            skipped_tradelines_list.append(t)
-
-    # Combine into final score:
-    raw_score = base_score + positive_count - negative_count
-
-    # Track if redemption scenario was applied
+    # Redemption scenario check
     redemption_applied = False
-    redemption_result = {
-        "applied": False,
-        "positive_count": 0,
-        "negative_count": 0,
-        "final_score": raw_score,
-    }
-
-    # ---------------- EXCEPTION #1: "Redemption Scenario" ----------------
-    # If 70% of the negative tradelines have a status date older than 2 years,
-    # then re-score ignoring any tradelines older than 3 years.
-
-    pct_older = get_negative_tradelines_for_redemption(negative_tradelines_list)
-    if pct_older >= 0.70 and negative_tradelines_list:
-        # "When 70% of the -1 tradelines have a status date older than 2 years old,
-        #  then we re-compute the report's score but only counting tradelines with
-        #  a status date within the last 3 years."
-
-        redemption_applied = True
-        redemption_result["applied"] = True
-
+    pct_older = get_negative_tradelines_for_redemption(neg_tradelines)
+    if pct_older >= 0.7 and neg_tradelines:
         three_years_ago = datetime.now().date().replace(year=datetime.now().year - 3)
+        recent_tradelines = [
+            t
+            for t in all_tradelines
+            if not t["status_date"] or t["status_date"] >= three_years_ago
+        ]
 
-        # We re-run the logic with only 'recent' tradelines (status_date >= 3 years ago).
-        # For simplicity, let's define a quick function:
+        # Re-evaluate recent tradelines
+        redemption_tradelines = [
+            evaluate_tradeline(t, report_date, has_bankruptcy)
+            for t in recent_tradelines
+        ]
+        redemption_pos = sum(
+            t["evaluation"]["is_positive"] for t in redemption_tradelines
+        )
+        redemption_neg = sum(
+            t["evaluation"]["is_negative"] for t in redemption_tradelines
+        )
+        redemption_score = base_score + redemption_pos - redemption_neg
 
-        def in_last_3_years(t):
-            sd = t["status_date"]
-            if not sd:
-                # if no status date found, we might keep it.
-                # Or we treat "no date" as not countable. We'll keep it for demonstration
-                return True
-            return sd >= three_years_ago
+        if redemption_score > raw_score:
+            raw_score = redemption_score
+            pos_tradelines = [
+                t for t in redemption_tradelines if t["evaluation"]["is_positive"]
+            ]
+            neg_tradelines = [
+                t for t in redemption_tradelines if t["evaluation"]["is_negative"]
+            ]
+            redemption_applied = True
 
-        # Re-initialize
-        redemption_pos = 0
-        redemption_neg = 0
-        redemption_pos_tradelines = []
-        redemption_neg_tradelines = []
+    # Final grade
+    final_grade = grade_report(raw_score, pos_tradelines)
 
-        for t in all_tradelines:
-            # Add redemption evaluation to each tradeline
-            t["redemption_evaluation"] = {
-                "considered": False,
-                "reason": "Not considered for redemption scoring",
-            }
-
-            # skip bankruptcy condition:
-            if has_bankruptcy:
-                if (
-                    t.get("account_condition", "")
-                    .lower()
-                    .find("discharged through bankruptcy")
-                    >= 0
-                    or t.get("account_condition", "")
-                    .lower()
-                    .find("included in bankruptcy")
-                    >= 0
-                ):
-                    t["redemption_evaluation"]["reason"] = "Excluded due to bankruptcy"
-                    continue
-
-            # only count if in last 3 years
-            if not in_last_3_years(t):
-                t["redemption_evaluation"][
-                    "reason"
-                ] = "Excluded due to being older than 3 years"
-                continue
-
-            t["redemption_evaluation"]["considered"] = True
-            t["redemption_evaluation"]["reason"] = "Considered for redemption scoring"
-
-            # check +1 conditions again
-            # (the same logic as before, only shortened for demonstration)
-            is_open_and_current = t.get("account_condition", "").lower().startswith(
-                "open"
-            ) and t.get("payment_status", "").lower().startswith("current")
-
-            is_mortgage = False
-            if t["account_type"] and (
-                "real estate" in t["account_type"] or "mortgage" in t["account_type"]
-            ):
-                is_mortgage = True
-            t["is_mortgage"] = is_mortgage
-
-            # months
-            months_on_file = t["months_reviewed"]
-            if months_on_file is None and t["open_date"]:
-                months_on_file = compute_months_diff(
-                    t["open_date"], datetime.now().date()
-                )
-
-            limit_ok = t["credit_limit"] and (t["credit_limit"] > 1000)
-
-            skip_for_positive = False
-            if t["is_medical_or_edu"]:
-                skip_for_positive = True
-            if t["account_type"] and (
-                "auto loan" in t["account_type"] or "auto lease" in t["account_type"]
-            ):
-                skip_for_positive = True
-
-            meets_responsibility = False
-            if is_mortgage:
-                meets_responsibility = True
-            else:
-                if t.get("responsibility", "").lower().startswith("individual"):
-                    meets_responsibility = True
-
-            # +1
-            if (
-                is_open_and_current
-                and meets_responsibility
-                and limit_ok
-                and months_on_file is not None
-                and months_on_file >= 12
-                and not skip_for_positive
-            ):
-                redemption_pos += 1
-                t["redemption_evaluation"]["status"] = "positive"
-                redemption_pos_tradelines.append(t)
-
-            # -1
-            cond_lower = t.get("account_condition", "").lower()
-            stat_lower = t.get("payment_status", "").lower()
-            if ("unpaid balance reported as loss" in cond_lower) or (
-                "seriously past due" in stat_lower
-            ):
-                if not t["is_medical_or_edu"]:
-                    redemption_neg += 1
-                    t["redemption_evaluation"]["status"] = "negative"
-                    redemption_neg_tradelines.append(t)
-
-        # final redemption score:
-        redemption_raw_score = base_score + redemption_pos - redemption_neg
-        redemption_result["positive_count"] = redemption_pos
-        redemption_result["negative_count"] = redemption_neg
-        redemption_result["final_score"] = redemption_raw_score
-
-        # Use the better score between original and redemption
-        if redemption_raw_score > raw_score:
-            raw_score = redemption_raw_score
-            # Update the lists to reflect the redemption scenario results
-            positive_tradelines_list = redemption_pos_tradelines
-            negative_tradelines_list = redemption_neg_tradelines
-
-    # --------------- Now map raw_score -> final grade ---------------
-    final_score = raw_score
-    final_grade = grade_report(final_score, positive_tradelines_list)
-
-    # Just for demonstration, we pack some "extra info" into a dictionary:
+    # Prepare extras
     extras = {
-        "positive_count": positive_count,
-        "negative_count": negative_count,
+        "positive_count": len(pos_tradelines),
+        "negative_count": len(neg_tradelines),
         "base_score_start": base_score,
         "has_bankruptcy": has_bankruptcy,
         "pct_neg_older_2yr": pct_older,
         "redemption_applied": redemption_applied,
-        "redemption_result": redemption_result if redemption_applied else None,
-        "accepted_tradelines": positive_tradelines_list,
-        "rejected_tradelines": negative_tradelines_list,
-        "skipped_tradelines": skipped_tradelines_list,
+        "accepted_tradelines": pos_tradelines,
+        "rejected_tradelines": neg_tradelines,
+        "skipped_tradelines": skipped_tradelines,
         "all_tradelines": all_tradelines,
     }
 
-    return final_score, final_grade, extras
+    return raw_score, final_grade, extras
 
 
 def get_tradelines(text):
@@ -612,6 +434,7 @@ def get_tradelines(text):
             "payment_status": None,
             "months_reviewed": None,
             "credit_limit": None,
+            "original_amount": None,
             "high_balance": None,
             "responsibility": None,
             "open_date": None,
@@ -622,13 +445,11 @@ def get_tradelines(text):
         }
 
         # Try to parse out "account_type" from the first line if possible
-        # e.g. 'BC  - Bank Credit Cards', 'EL - Student Loans', etc.
+        # e.g. 'Account Type: Real Estate' etc.
         # We'll do a quick match:
-        mtype = re.search(r"/\s*([A-Z]{2,3})\s*-\s*(.*)", first_line)
+        mtype = re.search(r"Account\s*Type:\s*(.*)", chunk)
         if mtype:
-            # Example: group(1) = "BC", group(2) = "Bank Credit Cards"
-            # or group(1) = "EL", group(2) = "Student Loans"
-            tline["account_type"] = mtype.group(2).strip().lower()
+            tline["account_type"] = mtype.group(1).split("\n")[0].strip()
 
         # Extract account number
         account_num = re.search(r"Account #:\s*(\d+)", chunk)
@@ -654,7 +475,7 @@ def get_tradelines(text):
 
         # Months Reviewed line: "Months Reviewed:\n(\d+)"
         # or "Months Review ed:\n(\d+)"
-        mmonths = re.search(r"Months\s*Review ed\S*:\s*(\d+)", chunk)
+        mmonths = re.search(r"Months\s*(?:Reviewed|Review\s*ed)\s*:\s*(\d+)", chunk)
         if mmonths:
             tline["months_reviewed"] = int(mmonths.group(1))
 
@@ -662,6 +483,11 @@ def get_tradelines(text):
         credit_limit_search_result = extract_credit_limit(lines)
         if credit_limit_search_result is not None:
             tline["credit_limit"] = credit_limit_search_result
+
+        # Look for "Original Amount" and get the next valid number
+        original_amount_search_result = extract_original_amount(lines)
+        if original_amount_search_result is not None:
+            tline["original_amount"] = original_amount_search_result
 
         # Clean and extract High Balance
         high_balance_search = re.search(
