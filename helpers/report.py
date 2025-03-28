@@ -3,6 +3,7 @@ from datetime import datetime
 from helpers.cleaner import (
     clean_text,
     extract_original_amount,
+    extract_status_date,
     parse_date,
     compute_months_diff,
     extract_credit_limit,
@@ -21,20 +22,35 @@ def check_prior_bankruptcy(text):
     return False
 
 
-def get_negative_tradelines_for_redemption(negative_tradelines):
+def get_negative_tradelines_for_redemption(all_tradelines):
     """
-    Return how many negative tradelines have a status date older than 2 years,
-    etc. This is where you'd code your 70% threshold logic.
+    Check the percentage of negative.
+
+    Returns:
+    - Percentage of negative tradelines that are older than 2 years
     """
     two_years_ago = datetime.now().date().replace(year=datetime.now().year - 2)
-    older_than_2yrs = [
+
+    # Identify negative and old tradelines
+    negative_tradelines = [t for t in all_tradelines if t["evaluation"]["is_negative"]]
+
+    # Old negative tradelines
+    old_negative_tradelines = [
         t
         for t in negative_tradelines
-        if t["status_date"] and t["status_date"] < two_years_ago
+        if t["status_date"]
+        and parse_date(t["status_date"]) is not None
+        and parse_date(t["status_date"]) < two_years_ago  # type: ignore
     ]
-    return (
-        len(older_than_2yrs) / len(negative_tradelines) if negative_tradelines else 0.0
+
+    # Calculate percentages
+    pct_old_negative = (
+        len(old_negative_tradelines) / len(negative_tradelines)
+        if negative_tradelines
+        else 0.0
     )
+
+    return pct_old_negative
 
 
 def print_detailed_report(score, grade, details):
@@ -74,6 +90,7 @@ def print_detailed_report(score, grade, details):
         )
         print(f"   Credit Limit: ${tradeline.get('credit_limit', 'N/A')}")
         print(f"   Original Amount: {tradeline.get('original_amount', 'N/A')}")
+        print(f"   Status Date: {tradeline.get('status_date', 'N/A')}")
         print(f"   Responsibility: {tradeline.get('responsibility', 'N/A')}")
         print(f"   Months Reviewed: {tradeline.get('months_reviewed', 'N/A')}")
         print(f"   Is Mortgage: {tradeline.get('is_mortgage', False)}")
@@ -89,6 +106,7 @@ def print_detailed_report(score, grade, details):
         )
         print(f"   Credit Limit: ${tradeline.get('credit_limit', 'N/A')}")
         print(f"   Original Amount: {tradeline.get('original_amount', 'N/A')}")
+        print(f"   Status Date: {tradeline.get('status_date', 'N/A')}")
         print(f"   Responsibility: {tradeline.get('responsibility', 'N/A')}")
         print(f"   Months Reviewed: {tradeline.get('months_reviewed', 'N/A')}")
         print(f"   Is Mortgage: {tradeline.get('is_mortgage', False)}")
@@ -107,6 +125,7 @@ def print_detailed_report(score, grade, details):
         )
         print(f"   Credit Limit: ${tradeline.get('credit_limit', 'N/A')}")
         print(f"   Original Amount: {tradeline.get('original_amount', 'N/A')}")
+        print(f"   Status Date: {tradeline.get('status_date', 'N/A')}")
         print(f"   Responsibility: {tradeline.get('responsibility', 'N/A')}")
         print(f"   Months Reviewed: {tradeline.get('months_reviewed', 'N/A')}")
         print(f"   Is Mortgage: {tradeline.get('is_mortgage', False)}")
@@ -323,39 +342,60 @@ def score_credit_report(pdf_path):
     # Calculate raw score
     raw_score = base_score + len(pos_tradelines) - len(neg_tradelines)
 
+    # Default redemption result
+    redemption_result = {
+        "final_score": raw_score,
+        "positive_count": len(pos_tradelines),
+        "negative_count": len(neg_tradelines),
+    }
     # Redemption scenario check
     redemption_applied = False
-    pct_older = get_negative_tradelines_for_redemption(neg_tradelines)
-    if pct_older >= 0.7 and neg_tradelines:
-        three_years_ago = datetime.now().date().replace(year=datetime.now().year - 3)
-        recent_tradelines = [
-            t
-            for t in all_tradelines
-            if not t["status_date"] or t["status_date"] >= three_years_ago
-        ]
 
-        # Re-evaluate recent tradelines
-        redemption_tradelines = [
-            evaluate_tradeline(t, report_date, has_bankruptcy)
-            for t in recent_tradelines
-        ]
+    # Get percentages of old negative
+    pct_old_negative = get_negative_tradelines_for_redemption(all_tradelines)
+
+    # Check if majority (>70%) of negative tradelines are old
+    if pct_old_negative >= 0.7 and neg_tradelines:
+        three_years_ago = datetime.now().date().replace(year=datetime.now().year - 3)
+        filtered_tradelines = []
+        for tradeline in all_tradelines:
+            if tradeline["evaluation"]["is_negative"]:
+                # If negative, drop it *only* if it is older than 3 years
+                status_dt = parse_date(tradeline["status_date"])
+                if status_dt and status_dt < three_years_ago:
+                    # This negative tradeline is old; exclude it
+                    continue
+                else:
+                    filtered_tradelines.append(tradeline)
+            else:
+                # Keep positives (and anything that's not negative)
+                filtered_tradelines.append(tradeline)
+
+        # Now recalculate positive/negative among the *filtered* list
         redemption_pos = sum(
-            t["evaluation"]["is_positive"] for t in redemption_tradelines
+            t["evaluation"]["is_positive"] for t in filtered_tradelines
         )
         redemption_neg = sum(
-            t["evaluation"]["is_negative"] for t in redemption_tradelines
+            t["evaluation"]["is_negative"] for t in filtered_tradelines
         )
         redemption_score = base_score + redemption_pos - redemption_neg
 
+        # Update results only if this "redemption" scenario yields a better score
         if redemption_score > raw_score:
             raw_score = redemption_score
             pos_tradelines = [
-                t for t in redemption_tradelines if t["evaluation"]["is_positive"]
+                t for t in filtered_tradelines if t["evaluation"]["is_positive"]
             ]
             neg_tradelines = [
-                t for t in redemption_tradelines if t["evaluation"]["is_negative"]
+                t for t in filtered_tradelines if t["evaluation"]["is_negative"]
             ]
             redemption_applied = True
+
+            redemption_result = {
+                "final_score": redemption_score,
+                "positive_count": redemption_pos,
+                "negative_count": redemption_neg,
+            }
 
     # Final grade
     final_grade = grade_report(raw_score, pos_tradelines)
@@ -366,8 +406,9 @@ def score_credit_report(pdf_path):
         "negative_count": len(neg_tradelines),
         "base_score_start": base_score,
         "has_bankruptcy": has_bankruptcy,
-        "pct_neg_older_2yr": pct_older,
+        "pct_neg_older_2yr": pct_old_negative,
         "redemption_applied": redemption_applied,
+        "redemption_result": redemption_result,
         "accepted_tradelines": pos_tradelines,
         "rejected_tradelines": neg_tradelines,
         "skipped_tradelines": skipped_tradelines,
@@ -509,9 +550,9 @@ def get_tradelines(text):
             tline["open_date"] = od
 
         # "Status Date" + date
-        mstat = re.search(r"Status\s*Date\s*([\d/]+)", chunk)
-        if mstat:
-            sd = parse_date(mstat.group(1))
-            tline["status_date"] = sd
+        # mstat = re.search(r"Status\s*Date\s*([\d/]+)", chunk)
+        mstat = extract_status_date(lines)
+        if mstat is not None:
+            tline["status_date"] = mstat
 
         yield tline
