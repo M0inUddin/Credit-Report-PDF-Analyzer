@@ -178,14 +178,14 @@ def evaluate_tradeline(t, report_date, has_bankruptcy):
        - Must be open/current
        - Must have 'Responsibility: Individual'
          (unless it's a mortgage which we already handle above)
-       - Must have credit limit/original amount > 1000
+       - Must have credit limit/original amount >= 1000
        - Must have 12+ months
        - Must not be auto, self-reported, medical, or edu
     4. For -1:
        - Condition/payment status has "unpaid balance reported as loss", or
          "seriously past due", or
          condition: "Legally paid in full for less than full balance" & status: "unpaid balance reported as loss", or
-         condition: "Open" & status: "60 days past due" or "90 days past due"
+         condition: "Open" & status: "60 days past due" or "90 days past due" or "120 days past due" or "150 days past due" or "180 days past due"
        - Exclude medical or edu from negative scoring
     """
     # Initialize evaluation details
@@ -247,9 +247,14 @@ def evaluate_tradeline(t, report_date, has_bankruptcy):
     payment_status = (t.get("payment_status", "") or "").lower()
 
     is_open = "open" in account_condition
-    is_current = "current" in payment_status
+    # FIX #3: Check if status is "current" but exclude "current/was X past due"
+    is_current = "current" in payment_status and not any(
+        f"current/was {days} days past due" in payment_status
+        for days in ["30", "60", "90", "120", "150", "180"]
+    )
 
     # Credit limit and original amount checks
+    # FIX #2: Ensure we consistently use >= 1000, not > 1000
     credit_limit = t.get("credit_limit", 0) or 0
     original_amount = t.get("original_amount", 0) or 0
 
@@ -274,7 +279,7 @@ def evaluate_tradeline(t, report_date, has_bankruptcy):
         if (
             is_open
             and is_current
-            and (credit_limit > 1000 or original_amount > 1000)
+            and (credit_limit >= 1000 or original_amount >= 1000)
             and has_12_months
             and is_individual
             and not is_medical_or_edu
@@ -290,7 +295,7 @@ def evaluate_tradeline(t, report_date, has_bankruptcy):
                 }
             )
             t["evaluation"]["reasons"].append(
-                f"Open: {is_open}, Current: {is_current}, Amount OK: {credit_limit > 1000 or original_amount > 1000}"
+                f"Open: {is_open}, Current: {is_current}, Amount OK: {credit_limit >= 1000 or original_amount >= 1000}"
             )
             t["evaluation"]["reasons"].append(
                 f"12+ months: {has_12_months}, Individual: {is_individual}"
@@ -331,7 +336,8 @@ def evaluate_tradeline(t, report_date, has_bankruptcy):
                 "Negative: Unpaid balance reported as loss"
             )
 
-        if "seriously past due" in payment_status:
+        # FIX #4: Ensure we're properly catching "Seriously Past Due"
+        if "seriously past due" in payment_status.lower():
             is_negative = True
             t["evaluation"]["reasons"].append("Negative: Seriously past due")
 
@@ -344,13 +350,23 @@ def evaluate_tradeline(t, report_date, has_bankruptcy):
                 "Negative: Legally paid for less than full balance with unpaid balance"
             )
 
-        if is_open and "60 days past due" in payment_status:
-            is_negative = True
-            t["evaluation"]["reasons"].append("Negative: Open account 60 days past due")
+        # FIX #1 and #3: Check for past due days but exclude "current/was X past due" pattern
+        past_due_days = ["60", "90", "120", "150", "180"]
 
-        if is_open and "90 days past due" in payment_status:
-            is_negative = True
-            t["evaluation"]["reasons"].append("Negative: Open account 90 days past due")
+        # Check if account is past due and NOT "paid/zero balance"
+        if not "paid/zero balance" in account_condition:
+            for days in past_due_days:
+                # Match specific pattern like "60 days past due" but not "current/was 60 days past due"
+                pattern = f"{days} days past due"
+                if (
+                    pattern in payment_status
+                    and not f"current/was {pattern}" in payment_status.lower()
+                ):
+                    is_negative = True
+                    t["evaluation"]["reasons"].append(
+                        f"Negative: Account {days} days past due"
+                    )
+                    break
 
         if is_negative:
             t["evaluation"].update(
