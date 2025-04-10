@@ -8,9 +8,9 @@ def clean_text(text):
 
 
 def parse_date(date_str):
-    """Parse dates of the form MM/DD/YYYY. Returns a datetime.date or None."""
+    """Parse dates of the form MM/YYYY. Returns a datetime.date or None."""
     try:
-        return datetime.strptime(date_str.strip(), "%m/%d/%Y").date()
+        return datetime.strptime(date_str.strip(), "%m/%Y").date()
     except:
         return None
 
@@ -52,4 +52,72 @@ def extract_credit_limit(lines):
                 )  # Remove commas and convert to integer
 
     # If no Credit Limit found, return None
+    return None
+
+
+def extract_original_amount(lines):
+    """
+    Extracts the Original Amount from a list of lines.
+    This function looks for the first dollar amount in the lines after finding "Original Amount".
+    """
+    # Check if "Original" and "Amount" appear in the same line
+    original_amount_index = -1
+
+    # If not found, check for consecutive lines
+    if original_amount_index == -1:
+        for i in range(len(lines) - 1):
+            if "Original" in lines[i] and "Amount" in lines[i + 1]:
+                original_amount_index = i + 1
+                break
+
+    # If we found "Original Amount", search for the first dollar amount after that
+    if original_amount_index != -1:
+        for i in range(original_amount_index + 1, len(lines)):
+            # Clean the line for non-breaking spaces
+            cleaned_line = lines[i].replace("\xa0", " ").strip()
+
+            # Match any dollar amount like "$300", "$500.75", etc.
+            match = re.search(r"\$([\d,]+(?:\.\d{2})?|\d+)", cleaned_line)
+            if match:
+                # Return the first matched amount as the Original Amount
+                return int(
+                    match.group(1).replace(",", "")
+                )  # Remove commas and convert to integer
+
+    # If no Original Amount found, return None
+    return None
+
+
+def extract_status_date(lines):
+    """
+    Extracts the Status Date from a list of lines.
+    This function looks for the second date in the lines after finding "Status Date".
+    """
+    # Check if "Status" and "Date" appear in the same line
+    status_date_index = -1
+
+    # If not found, check for consecutive lines
+    if status_date_index == -1:
+        for i in range(len(lines) - 1):
+            if "Status" in lines[i] and "Date" in lines[i + 1]:
+                status_date_index = i + 1
+                break
+
+    # If we found "Status Date", search for the second date after that
+    if status_date_index != -1:
+        for i in range(status_date_index + 1, len(lines)):
+            # Clean the line for non-breaking spaces
+            cleaned_line = lines[i].replace("\xa0", " ").strip()
+            # Match dates in format MM/DD/YYYY
+            match = re.search(r"(\d{2}/\d{2}/\d{4})", cleaned_line)
+            if match:
+                # Return the matched date string
+                continue
+            # Match dates in format MM/YYYY
+            match = re.search(r"(\d{2}/\d{4})", cleaned_line)
+            if match:
+                # Return the matched date string
+                return match.group(1)
+
+    # If no Status Date found, return None
     return None

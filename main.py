@@ -14,3 +14,8 @@ for pdf_file_path in pdf_files_path:
     # Score and grade the credit report
     score, grade, details = score_credit_report(pdf_file_path)
     print_detailed_report(score, grade, details)
+
+# pdf_file_path="docs/RANDOLPH S TAYLOR_EXP.pdf"
+# # Score and grade the credit report
+# score, grade, details = score_credit_report(pdf_file_path)
+# print_detailed_report(score, grade, details)
