@@ -187,6 +187,9 @@ def evaluate_tradeline(t, report_date, has_bankruptcy):
          condition: "Legally paid in full for less than full balance" & status: "unpaid balance reported as loss", or
          condition: "Open" & status: "60 days past due" or "90 days past due" or "120 days past due" or "150 days past due" or "180 days past due"
        - Exclude medical or edu from negative scoring
+       - Exclude accounts with "transferred" status from both positive and negative scoring
+       - Exclude accounts showing "was X days past due/now Y" from negative scoring
+       - Exclude accounts with "current/w as X days past due" or "current/was X days past due" from negative scoring
     """
     # Initialize evaluation details
     t["evaluation"] = {
@@ -246,15 +249,40 @@ def evaluate_tradeline(t, report_date, has_bankruptcy):
     account_condition = (t.get("account_condition", "") or "").lower()
     payment_status = (t.get("payment_status", "") or "").lower()
 
+    # First, handle transferred accounts
+    if "transferred" in account_condition:
+        t["evaluation"].update(
+            {
+                "status": "skipped",
+                "is_skipped": True,
+                "reasons": [
+                    "Account transferred - excluded from both positive and negative scoring"
+                ],
+            }
+        )
+        return t
+
     is_open = "open" in account_condition
-    # FIX #3: Check if status is "current" but exclude "current/was X past due"
-    is_current = "current" in payment_status and not any(
-        f"current/was {days} days past due" in payment_status
-        for days in ["30", "60", "90", "120", "150", "180"]
+
+    # MODIFIED: Consider "current/w as" and "current/was" patterns as current
+    # Allow accounts with these patterns to be counted as current for positive scoring
+    is_current = "current" in payment_status
+
+    # Check if status includes pattern showing previous delinquency
+    has_previous_delinquency = any(
+        [
+            "current/was" in payment_status.lower(),
+            "current/w as" in payment_status.lower(),
+            "was" in account_condition.lower() and "now" in account_condition.lower(),
+        ]
     )
 
+    if has_previous_delinquency:
+        t["evaluation"]["reasons"].append(
+            "Account shows previous delinquency but now current - considered current for scoring"
+        )
+
     # Credit limit and original amount checks
-    # FIX #2: Ensure we consistently use >= 1000, not > 1000
     credit_limit = t.get("credit_limit", 0) or 0
     original_amount = t.get("original_amount", 0) or 0
 
@@ -273,6 +301,14 @@ def evaluate_tradeline(t, report_date, has_bankruptcy):
     responsibility = (t.get("responsibility", "") or "").lower()
     is_individual = "individual" in responsibility
 
+    # Check if account condition shows current status after past due
+    is_was_pattern = (
+        ("was" in account_condition and "now" in account_condition)
+        or ("w as" in account_condition and "now" in account_condition)
+        or ("was" in payment_status.lower() and "now" in payment_status.lower())
+        or ("w as" in payment_status.lower() and "now" in payment_status.lower())
+    )
+
     # EVALUATE POSITIVE TRADELINES - NORMAL CRITERIA
     if not is_conventional_fha:
         # Regular positive tradeline criteria
@@ -286,7 +322,6 @@ def evaluate_tradeline(t, report_date, has_bankruptcy):
             and not is_auto
             and not is_selfreported
         ):
-
             t["evaluation"].update(
                 {
                     "status": "accepted",
@@ -305,9 +340,8 @@ def evaluate_tradeline(t, report_date, has_bankruptcy):
 
     # EVALUATE POSITIVE TRADELINES - MORTGAGE EXCEPTION
     elif is_conventional_fha:
-        # Special mortgage criteria
+        # Special mortgage criteria - ensure it's open and current
         if is_open and is_current and original_amount > 30000:
-
             t["evaluation"].update(
                 {
                     "status": "accepted",
@@ -326,55 +360,73 @@ def evaluate_tradeline(t, report_date, has_bankruptcy):
     if not is_medical_or_edu:
         is_negative = False
 
-        # Check for specific negative conditions
+        # Skip negative evaluation if it's a "was X days past due/now Y" pattern
+        # or if it has "current/w as" or "current/was" patterns
         if (
-            "unpaid balance reported as loss" in account_condition
-            or "unpaid balance reported as loss" in payment_status
+            is_was_pattern
+            or "current/w as" in payment_status.lower()
+            or "current/was" in payment_status.lower()
         ):
-            is_negative = True
             t["evaluation"]["reasons"].append(
-                "Negative: Unpaid balance reported as loss"
+                "Account shows previous delinquency but current status is better - not counted as negative"
             )
+        else:
+            # Check for specific negative conditions
+            if (
+                "unpaid balance reported as loss" in account_condition
+                or "unpaid balance reported as loss" in payment_status
+            ):
+                is_negative = True
+                t["evaluation"]["reasons"].append(
+                    "Negative: Unpaid balance reported as loss"
+                )
 
-        # FIX #4: Ensure we're properly catching "Seriously Past Due"
-        if "seriously past due" in payment_status.lower():
-            is_negative = True
-            t["evaluation"]["reasons"].append("Negative: Seriously past due")
+            # Ensure we're properly catching "Seriously Past Due"
+            if "seriously past due" in payment_status:
+                is_negative = True
+                t["evaluation"]["reasons"].append("Negative: Seriously past due")
 
-        if (
-            "legally paid in full for less than full balance" in account_condition
-            and "unpaid balance reported as loss" in payment_status
-        ):
-            is_negative = True
-            t["evaluation"]["reasons"].append(
-                "Negative: Legally paid for less than full balance with unpaid balance"
-            )
+            if (
+                "legally paid in full for less than full balance" in account_condition
+                and "unpaid balance reported as loss" in payment_status
+            ):
+                is_negative = True
+                t["evaluation"]["reasons"].append(
+                    "Negative: Legally paid for less than full balance with unpaid balance"
+                )
 
-        # FIX #1 and #3: Check for past due days but exclude "current/was X past due" pattern
-        past_due_days = ["60", "90", "120", "150", "180"]
+            # Check for past due days properly handling all exclusion cases
+            past_due_days = ["60", "90", "120", "150", "180"]
 
-        # Check if account is past due and NOT "paid/zero balance"
-        if not "paid/zero balance" in account_condition:
-            for days in past_due_days:
-                # Match specific pattern like "60 days past due" but not "current/was 60 days past due"
-                pattern = f"{days} days past due"
-                if (
-                    pattern in payment_status
-                    and not f"current/was {pattern}" in payment_status.lower()
-                ):
-                    is_negative = True
-                    t["evaluation"]["reasons"].append(
-                        f"Negative: Account {days} days past due"
-                    )
-                    break
+            # Check if account is past due and NOT "paid/zero balance"
+            if not "paid/zero balance" in account_condition:
+                for days in past_due_days:
+                    pattern = f"{days} days past due"
+                    # Complex check to exclude various current/was patterns
+                    if (
+                        pattern in payment_status or pattern in account_condition
+                    ) and not any(
+                        [
+                            f"current/w as {pattern}" in payment_status,
+                            f"current/was {pattern}" in payment_status,
+                            f"was {pattern}/now" in account_condition,
+                            f"was {pattern}" in account_condition
+                            and "now" in account_condition,
+                        ]
+                    ):
+                        is_negative = True
+                        t["evaluation"]["reasons"].append(
+                            f"Negative: Account {days} days past due"
+                        )
+                        break
 
-        if is_negative:
-            t["evaluation"].update(
-                {
-                    "status": "rejected",
-                    "is_negative": True,
-                }
-            )
+            if is_negative:
+                t["evaluation"].update(
+                    {
+                        "status": "rejected",
+                        "is_negative": True,
+                    }
+                )
 
     # Handle skipped tradelines (neither positive nor negative)
     if not (t["evaluation"]["is_positive"] or t["evaluation"]["is_negative"]):
@@ -418,6 +470,8 @@ def score_credit_report(pdf_path):
     for page in doc:
         full_text += page.get_text("text")  # type: ignore
     doc.close()
+
+    print(f"Extracted text {full_text}")
 
     # Check for prior bankruptcy (Exception #2)
     has_bankruptcy = check_prior_bankruptcy(full_text)
