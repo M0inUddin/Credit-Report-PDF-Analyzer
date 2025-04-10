@@ -471,8 +471,6 @@ def score_credit_report(pdf_path):
         full_text += page.get_text("text")  # type: ignore
     doc.close()
 
-    print(f"Extracted text {full_text}")
-
     # Check for prior bankruptcy (Exception #2)
     has_bankruptcy = check_prior_bankruptcy(full_text)
 
