@@ -168,4 +168,5 @@ with gr.Blocks(title="Credit Report Analysis", theme=gr.themes.Soft()) as demo:
 
 # Launch the app
 if __name__ == "__main__":
-    demo.launch()
+    # Run the Gradio app on 0.0.0.0:7860 to allow external access
+    demo.launch(server_name="0.0.0.0", server_port=7860)
