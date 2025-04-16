@@ -38,6 +38,13 @@ def process_credit_report(pdf_file):
         # Get the detailed report as text
         detailed_report = output.getvalue()
 
+        # Save detailed report to a temporary text file for download
+        detailed_report_file = tempfile.NamedTemporaryFile(
+            delete=False, suffix=".txt", mode="w", encoding="utf-8"
+        )
+        detailed_report_file.write(detailed_report)
+        detailed_report_file.close()
+
         # Create a summary for the quick results
         summary = f"Final Score: {score}\nFinal Grade: {grade}\n"
         summary += f"Positive Tradelines: {details['positive_count']}\n"
@@ -53,6 +60,7 @@ def process_credit_report(pdf_file):
             detailed_report,
             create_grade_html(grade),
             create_score_html(score),
+            detailed_report_file.name,  # File path for download
         )
 
     except Exception as e:
@@ -144,10 +152,18 @@ with gr.Blocks(title="Credit Report Analysis", theme=gr.themes.Soft()) as demo:
         label="Detailed Report", lines=20, max_lines=40, interactive=False
     )
 
+    download_output = gr.File(label="Download Detailed Report")
+
     analyze_btn.click(
         fn=process_credit_report,
         inputs=[input_pdf],
-        outputs=[summary_output, detailed_output, grade_display, score_display],
+        outputs=[
+            summary_output,
+            detailed_output,
+            grade_display,
+            score_display,
+            download_output,
+        ],
     )
 
     gr.Markdown(
